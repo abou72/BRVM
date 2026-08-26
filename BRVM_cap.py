@@ -161,7 +161,7 @@ def vers_ticker_officiel(nom_action):
     return CORRESPONDANCE_SYMBOLES.get(nom_action)
 
 
-FICHIER_FINANCIER = 'Données_CA_-_RN_-_DIV_2023-2025.xlsx'
+FICHIER_FINANCIER = 'Données_CA _RN_DIV_2023_2025.xlsx'
 FICHIER_CAPITALISATION = 'Capitalisation_boursiere.xlsx'
 
 
