@@ -920,7 +920,7 @@ ticker_selectionne = vers_ticker_officiel(action_choisie)
 
 
 # =====================================================================
-# LES 3 GRANDS ESPACES
+# LES 4 GRANDS ESPACES
 # =====================================================================
 
 onglet_boursier, onglet_financier, onglet_comparateur, onglet_pays = st.tabs([
