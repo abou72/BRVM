@@ -891,6 +891,119 @@ def generer_rapport_comparateur_pdf(tableau_comparateur, annee_comparee, secteur
     return tampon_pdf
 
 
+def generer_rapport_pays_pdf(tableau_pays, annee_pays, tableau_obligations_categorie=None, pays_marge_suspecte=None):
+    """Construit un rapport PDF résumant le regroupement par pays pour une année
+    donnée : tableau comparatif, graphiques par indicateur, et répartition des
+    obligations par pays/catégorie si disponible.
+    """
+    tampon_pdf = io.BytesIO()
+    document = SimpleDocTemplate(
+        tampon_pdf, pagesize=A4,
+        topMargin=2 * cm, bottomMargin=2 * cm, leftMargin=2 * cm, rightMargin=2 * cm,
+    )
+    styles = getSampleStyleSheet()
+    style_titre = ParagraphStyle('TitreRapportPays', parent=styles['Title'], textColor=colors.HexColor('#0b3d2e'))
+    style_section = ParagraphStyle('SectionRapportPays', parent=styles['Heading2'], textColor=colors.HexColor('#0b3d2e'))
+    style_normal = styles['Normal']
+
+    elements = []
+    elements.append(Paragraph(f"Regroupement par pays BRVM — {annee_pays}", style_titre))
+    elements.append(Paragraph(f"Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", style_normal))
+    elements.append(Spacer(1, 0.6 * cm))
+
+    # --- Tableau comparatif entre pays ---
+    elements.append(Paragraph("Comparaison entre pays", style_section))
+    entetes = ["Pays"] + list(tableau_pays.columns)
+    lignes_tableau = [entetes]
+    for pays, ligne in tableau_pays.iterrows():
+        lignes_tableau.append(
+            [pays] + [f"{v:.2f}" if pd.notna(v) else "—" for v in ligne]
+        )
+    tableau_pdf = Table(lignes_tableau, repeatRows=1)
+    tableau_pdf.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0b3d2e')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTSIZE', (0, 0), (-1, -1), 7),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f2f2f2')]),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    elements.append(tableau_pdf)
+    elements.append(Spacer(1, 0.4 * cm))
+
+    if pays_marge_suspecte is not None and not pays_marge_suspecte.empty:
+        elements.append(Paragraph(
+            "Marge nette agrégée anormale pour : " + ", ".join(pays_marge_suspecte.index)
+            + " — probablement dû à une valeur CA ou Résultat net mal saisie pour au "
+            "moins une société de ce pays dans le fichier source.",
+            style_normal,
+        ))
+        elements.append(Spacer(1, 0.4 * cm))
+
+    # --- Graphiques comparatifs ---
+    pays_liste = tableau_pays.index.tolist()
+    graphiques = [
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Chiffre d'affaires (Md FCFA)"].tolist(), "Chiffre d'affaires par pays", "Md FCFA"),
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Résultat net (Md FCFA)"].tolist(), "Résultat net par pays", "Md FCFA"),
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Marge nette agrégée (%)"].tolist(), "Marge nette agrégée par pays", "%"),
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Nombre de sociétés"].tolist(), "Nombre de sociétés par pays", "Sociétés"),
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Capitalisation globale (Md FCFA)"].tolist(), "Capitalisation globale par pays", "Md FCFA"),
+        generer_graphique_comparateur_barres(pays_liste, tableau_pays["Dividende total (FCFA)"].tolist(), "Dividende total par pays", "FCFA"),
+    ]
+    graphiques = [img for img in graphiques if img is not None]
+
+    largeur_image, hauteur_image = 8 * cm, 4.6 * cm
+    lignes_grille = []
+    for i in range(0, len(graphiques), 2):
+        paire = graphiques[i:i + 2]
+        ligne_images = [Image(img, width=largeur_image, height=hauteur_image) for img in paire]
+        if len(ligne_images) == 1:
+            ligne_images.append("")
+        lignes_grille.append(ligne_images)
+
+    if lignes_grille:
+        grille = Table(lignes_grille, colWidths=[largeur_image + 0.3 * cm] * 2)
+        grille.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(grille)
+
+    # --- Obligations par pays et par catégorie ---
+    if tableau_obligations_categorie is not None and not tableau_obligations_categorie.empty:
+        elements.append(Spacer(1, 0.5 * cm))
+        elements.append(Paragraph("Obligations par pays et par catégorie", style_section))
+        entetes_obligations = ["Pays"] + list(tableau_obligations_categorie.columns)
+        lignes_obligations = [entetes_obligations]
+        for pays, ligne in tableau_obligations_categorie.iterrows():
+            lignes_obligations.append([pays] + [str(int(v)) for v in ligne])
+        tableau_obligations_pdf = Table(lignes_obligations, repeatRows=1)
+        tableau_obligations_pdf.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0b3d2e')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cccccc')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f2f2f2')]),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elements.append(tableau_obligations_pdf)
+
+    elements.append(Spacer(1, 0.4 * cm))
+    elements.append(Paragraph(
+        "La marge nette agrégée est calculée comme la somme des résultats nets du pays "
+        "divisée par la somme de ses chiffres d'affaires (pas une moyenne des marges "
+        "individuelles). Le dividende total par pays est une somme des dividendes par "
+        "action des sociétés du pays — à interpréter avec prudence, les sociétés ayant "
+        "des cours et des nombres d'actions différents.",
+        style_normal,
+    ))
+
+    document.build(elements)
+    tampon_pdf.seek(0)
+    return tampon_pdf
+
+
 # =====================================================================
 # BARRE LATÉRALE — sélection commune aux onglets 1 et 2
 # =====================================================================
@@ -920,7 +1033,7 @@ ticker_selectionne = vers_ticker_officiel(action_choisie)
 
 
 # =====================================================================
-# LES 4 GRANDS ESPACES
+# LES 3 GRANDS ESPACES
 # =====================================================================
 
 onglet_boursier, onglet_financier, onglet_comparateur, onglet_pays = st.tabs([
@@ -1337,9 +1450,15 @@ with onglet_pays:
         "des cours et des nombres d'actions différents."
     )
 
-    st.download_button(
-        label=f"Exporter le regroupement par pays {annee_pays} (CSV)",
-        data=tableau_pays.to_csv().encode('utf-8'),
-        file_name=f"regroupement_pays_{annee_pays}.csv",
-        mime="text/csv",
-    )
+    if st.button("Générer le rapport PDF du regroupement par pays", key="bouton_pdf_pays"):
+        with st.spinner("Génération du PDF en cours..."):
+            pdf_pays = generer_rapport_pays_pdf(
+                tableau_pays, annee_pays, tableau_obligations_categorie, pays_marge_suspecte,
+            )
+        st.download_button(
+            label="Télécharger le rapport PDF",
+            data=pdf_pays,
+            file_name=f"regroupement_pays_{annee_pays}.pdf",
+            mime="application/pdf",
+            key="telechargement_pdf_pays",
+        )
