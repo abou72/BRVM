@@ -161,7 +161,7 @@ def vers_ticker_officiel(nom_action):
     return CORRESPONDANCE_SYMBOLES.get(nom_action)
 
 
-FICHIER_FINANCIER = 'Données_CA _RN_DIV_2023_2025.xlsx'
+FICHIER_FINANCIER = 'Données_CA_-_RN_-_DIV_2023-2025.xlsx'
 FICHIER_CAPITALISATION = 'Capitalisation_boursiere.xlsx'
 
 
@@ -270,14 +270,29 @@ except FileNotFoundError:
 
 @st.cache_data
 def charger_obligations():
-    """Charge la feuille des obligations (régionales pour l'instant, d'autres
-    catégories pourront s'ajouter plus tard sans changer le code : le regroupement
-    se fait dynamiquement sur les valeurs présentes dans la colonne Catégorie)."""
-    try:
-        obligations = pd.read_excel(FICHIER_CAPITALISATION, sheet_name='obli regionales', header=0)
-    except ValueError:
+    """Charge et concatène automatiquement toutes les feuilles d'obligations du
+    classeur capitalisation (ex: 'obli regionales', 'Sukuk', ...). Une feuille est
+    reconnue comme feuille d'obligations si son en-tête correspond exactement à
+    Symbole / Obligation / Catégorie / Pays — peu importe son nom ou son ordre
+    d'ajout au fichier. Ça permet d'ajouter de nouvelles catégories (une feuille
+    par catégorie) sans avoir à modifier le code à chaque fois.
+    """
+    entetes_attendues = ['symbole', 'obligation', 'catégorie', 'pays']
+    classeur = pd.ExcelFile(FICHIER_CAPITALISATION)
+
+    tables = []
+    for nom_feuille in classeur.sheet_names:
+        brut = pd.read_excel(classeur, sheet_name=nom_feuille, header=0)
+        entetes_lues = [str(c).strip().lower() for c in brut.columns]
+        if entetes_lues != entetes_attendues:
+            continue
+        brut.columns = ['Symbole', 'Obligation', 'Categorie', 'Pays']
+        tables.append(brut)
+
+    if not tables:
         return pd.DataFrame(columns=['Symbole', 'Obligation', 'Categorie', 'Pays'])
-    obligations.columns = ['Symbole', 'Obligation', 'Categorie', 'Pays']
+
+    obligations = pd.concat(tables, ignore_index=True)
     obligations['Pays'] = obligations['Pays'].apply(normaliser_pays)
     return obligations
 
