@@ -222,8 +222,11 @@ CORRECTIONS_PAYS = {
 
 NORMALISATION_PAYS = {
     "cote d'ivoire": "Côte d'Ivoire",
+    "cote divoire": "Côte d'Ivoire",  # apostrophe manquante, vu dans 'Obli Etat'
     "benin": "Bénin",
     "burkina faso": "Burkina Faso",
+    "burkina": "Burkina Faso",        # "Faso" omis, vu dans 'Obli Etat'
+    "burkina jaso": "Burkina Faso",   # faute de frappe, vue dans 'Obli Etat'
     "mali": "Mali",
     "niger": "Niger",
     "senegal": "Sénégal",
@@ -232,18 +235,45 @@ NORMALISATION_PAYS = {
 
 
 def normaliser_pays(nom_pays_brut):
-    """Nettoie un libellé de pays (espaces, casse, accents manquants)."""
+    """Nettoie un libellé de pays (espaces, casse, accents manquants, fautes de frappe connues)."""
     if pd.isna(nom_pays_brut):
         return None
     cle = nom_pays_brut.strip().lower()
     return NORMALISATION_PAYS.get(cle, nom_pays_brut.strip())
 
 
+def trouver_feuille_par_entetes(classeur, entetes_attendues):
+    """Cherche, dans un classeur Excel déjà ouvert, la première feuille dont les
+    en-têtes (normalisées) correspondent exactement à celles attendues, peu importe
+    le nom de la feuille. Retourne le DataFrame brut (header=0) ou None si aucune
+    feuille ne correspond. Sert à ne pas dépendre d'un nom de feuille qui peut
+    changer d'une mise à jour du fichier à l'autre.
+    """
+    for nom_feuille in classeur.sheet_names:
+        brut = pd.read_excel(classeur, sheet_name=nom_feuille, header=0)
+        entetes_lues = [str(c).strip().lower() for c in brut.columns]
+        if entetes_lues == entetes_attendues:
+            return brut
+    return None
+
+
 @st.cache_data
 def charger_capitalisation():
-    """Charge le fichier de capitalisation boursière, exclut la ligne de total et
+    """Charge la feuille de capitalisation boursière (repérée par ses colonnes,
+    pas par son nom — celui-ci a déjà changé une fois), exclut la ligne de total et
     normalise/corrige la colonne Pays."""
-    capi = pd.read_excel(FICHIER_CAPITALISATION, sheet_name='Table 4', header=0)
+    classeur = pd.ExcelFile(FICHIER_CAPITALISATION)
+    entetes_attendues = [
+        'code obligation', 'nom', 'capitalisation flottante',
+        'capitalisation globale', 'capitalisation globale (%)', 'pays',
+    ]
+    capi = trouver_feuille_par_entetes(classeur, entetes_attendues)
+    if capi is None:
+        raise ValueError(
+            "Aucune feuille de capitalisation boursière (colonnes Code obligation / "
+            "Nom / Capitalisation flottante / Capitalisation globale / Capitalisation "
+            "globale (%) / Pays) n'a été trouvée dans le classeur."
+        )
     capi.columns = [
         'Symbole', 'Nom', 'Capitalisation flottante',
         'Capitalisation globale', 'Capitalisation globale (%)', 'Pays',
@@ -271,11 +301,11 @@ except FileNotFoundError:
 @st.cache_data
 def charger_obligations():
     """Charge et concatène automatiquement toutes les feuilles d'obligations du
-    classeur capitalisation (ex: 'obli regionales', 'Sukuk', ...). Une feuille est
-    reconnue comme feuille d'obligations si son en-tête correspond exactement à
-    Symbole / Obligation / Catégorie / Pays — peu importe son nom ou son ordre
-    d'ajout au fichier. Ça permet d'ajouter de nouvelles catégories (une feuille
-    par catégorie) sans avoir à modifier le code à chaque fois.
+    classeur capitalisation (ex: 'obli regionales', 'Sukuk', 'Privés', 'Obli Etat',
+    ...). Une feuille est reconnue comme feuille d'obligations si son en-tête
+    correspond exactement à Symbole / Obligation / Catégorie / Pays — peu importe
+    son nom ou son ordre d'ajout au fichier. Ça permet d'ajouter de nouvelles
+    catégories (une feuille par catégorie) sans avoir à modifier le code à chaque fois.
     """
     entetes_attendues = ['symbole', 'obligation', 'catégorie', 'pays']
     classeur = pd.ExcelFile(FICHIER_CAPITALISATION)
@@ -298,6 +328,24 @@ def charger_obligations():
 
 
 obligations = charger_obligations()
+
+
+@st.cache_data
+def charger_sgi():
+    """Charge la feuille des Sociétés de Gestion et d'Intermédiation (SGI), repérée
+    par ses colonnes (# / Noms des SGI / Pays) plutôt que par son nom.
+    """
+    classeur = pd.ExcelFile(FICHIER_CAPITALISATION)
+    entetes_attendues = ['#', 'noms des sgi', 'pays']
+    sgi = trouver_feuille_par_entetes(classeur, entetes_attendues)
+    if sgi is None:
+        return pd.DataFrame(columns=['Numero', 'Nom', 'Pays'])
+    sgi.columns = ['Numero', 'Nom', 'Pays']
+    sgi['Pays'] = sgi['Pays'].apply(normaliser_pays)
+    return sgi
+
+
+sgi = charger_sgi()
 
 
 def calculer_obligations_par_categorie():
@@ -333,6 +381,7 @@ def calculer_regroupement_pays(annee):
         capi_flottante_pays = capi_pays['Capitalisation flottante'].sum()
 
         nb_obligations_pays = len(obligations[obligations['Pays'] == pays]) if not obligations.empty else 0
+        nb_sgi_pays = len(sgi[sgi['Pays'] == pays]) if not sgi.empty else 0
 
         lignes.append({
             'Pays': pays,
@@ -344,6 +393,7 @@ def calculer_regroupement_pays(annee):
             'Capitalisation globale (Md FCFA)': round(capi_globale_pays / 1_000_000_000, 2),
             'Capitalisation flottante (Md FCFA)': round(capi_flottante_pays / 1_000_000_000, 2),
             "Nombre d'obligations": nb_obligations_pays,
+            'Nombre de SGI': nb_sgi_pays,
         })
 
     tableau = pd.DataFrame(lignes).set_index('Pays')
@@ -891,12 +941,11 @@ def generer_rapport_comparateur_pdf(tableau_comparateur, annee_comparee, secteur
     return tampon_pdf
 
 
-def generer_rapport_pays_pdf(pays_choisi, annee_pays, fiche_pays, societes_pays, obligations_pays, marge_suspecte=False):
+def generer_rapport_pays_pdf(pays_choisi, annee_pays, fiche_pays, societes_pays, obligations_pays, sgi_pays, marge_suspecte=False):
     """Construit un rapport PDF centré sur le pays sélectionné : un résumé mettant
     en avant le nombre de sociétés cotées, la capitalisation boursière et son poids
-    dans la BRVM, et le nombre d'obligations ; puis le détail des indicateurs
-    financiers, des sociétés cotées, et un récapitulatif des obligations par
-    catégorie.
+    dans la BRVM, le nombre d'obligations et de SGI ; puis le détail des indicateurs
+    financiers, des sociétés cotées, des obligations par catégorie et des SGI.
     """
     tampon_pdf = io.BytesIO()
     document = SimpleDocTemplate(
@@ -930,15 +979,16 @@ def generer_rapport_pays_pdf(pays_choisi, annee_pays, fiche_pays, societes_pays,
     # --- Résumé mis en avant ---
     elements.append(Paragraph("Résumé", style_section))
     lignes_resume = [
-        ["Sociétés cotées", "Capitalisation globale (Md FCFA)", "Poids en capitalisation BRVM", "Obligations"],
+        ["Sociétés cotées", "Capitalisation globale (Md FCFA)", "Poids en capitalisation BRVM", "Obligations", "SGI"],
         [
             str(int(fiche_pays["Nombre de sociétés"])),
             fmt(fiche_pays["Capitalisation globale (Md FCFA)"]),
             fmt(fiche_pays["Part de la capitalisation (%)"], "%"),
             str(int(fiche_pays["Nombre d'obligations"])),
+            str(int(fiche_pays["Nombre de SGI"])),
         ],
     ]
-    tableau_resume = Table(lignes_resume, colWidths=[4.2 * cm] * 4)
+    tableau_resume = Table(lignes_resume, colWidths=[3.4 * cm] * 5)
     tableau_resume.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0b3d2e')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1020,6 +1070,18 @@ def generer_rapport_pays_pdf(pays_choisi, annee_pays, fiche_pays, societes_pays,
         tableau_obligations = Table(lignes_obligations, repeatRows=1, colWidths=[3 * cm, 8 * cm, 3.2 * cm])
         tableau_obligations.setStyle(TableStyle(style_tableau_entete))
         elements.append(tableau_obligations)
+
+    elements.append(Spacer(1, 0.5 * cm))
+
+    # --- SGI ---
+    elements.append(Paragraph("Sociétés de Gestion et d'Intermédiation (SGI)", style_section))
+    if sgi_pays is None or sgi_pays.empty:
+        elements.append(Paragraph(f"Aucune SGI recensée pour {pays_choisi}.", style_normal))
+    else:
+        lignes_sgi = [["Nom"]] + [[nom] for nom in sgi_pays["Nom"].tolist()]
+        tableau_sgi = Table(lignes_sgi, repeatRows=1, colWidths=[14 * cm])
+        tableau_sgi.setStyle(TableStyle(style_tableau_entete))
+        elements.append(tableau_sgi)
 
     elements.append(Spacer(1, 0.4 * cm))
     elements.append(Paragraph(
@@ -1379,11 +1441,12 @@ with onglet_pays:
 
     st.subheader(f"{pays_choisi} — {annee_pays}")
 
-    ligne1_c1, ligne1_c2, ligne1_c3, ligne1_c4 = st.columns(4)
+    ligne1_c1, ligne1_c2, ligne1_c3, ligne1_c4, ligne1_c5 = st.columns(5)
     ligne1_c1.metric("Sociétés cotées", int(fiche_pays["Nombre de sociétés"]))
     ligne1_c2.metric("Capitalisation globale (Md FCFA)", f"{fiche_pays['Capitalisation globale (Md FCFA)']:.2f}")
     ligne1_c3.metric("Part de la capitalisation BRVM", f"{fiche_pays['Part de la capitalisation (%)']:.2f}%")
     ligne1_c4.metric("Obligations", int(fiche_pays["Nombre d'obligations"]))
+    ligne1_c5.metric("SGI", int(fiche_pays["Nombre de SGI"]))
 
     valeur_ca_pays = fiche_pays["Chiffre d'affaires (Md FCFA)"]
     ligne2_c1, ligne2_c2, ligne2_c3, ligne2_c4 = st.columns(4)
@@ -1428,10 +1491,17 @@ with onglet_pays:
             use_container_width=True,
         )
 
+    st.markdown(f"**Sociétés de Gestion et d'Intermédiation (SGI) — {pays_choisi}**")
+    sgi_pays = sgi[sgi['Pays'] == pays_choisi] if not sgi.empty else pd.DataFrame()
+    if sgi_pays.empty:
+        st.info(f"Aucune SGI recensée pour {pays_choisi}.")
+    else:
+        st.dataframe(sgi_pays[['Nom']].reset_index(drop=True), use_container_width=True, hide_index=True)
+
     if st.button("Générer le rapport PDF du pays", key="bouton_pdf_pays"):
         with st.spinner("Génération du PDF en cours..."):
             pdf_pays = generer_rapport_pays_pdf(
-                pays_choisi, annee_pays, fiche_pays, societes_pays, obligations_pays,
+                pays_choisi, annee_pays, fiche_pays, societes_pays, obligations_pays, sgi_pays,
                 marge_suspecte=(pays_choisi in pays_marge_suspecte.index),
             )
         st.download_button(
